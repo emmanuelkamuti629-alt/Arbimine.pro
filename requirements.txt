@@ -3,4 +3,4 @@ Flask-Cors==4.0.1
 ccxt==4.4.93
 websockets==12.0
 aiohttp==3.9.5
-asyncio==3.4.3
+gunicorn==21.2.0
