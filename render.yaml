@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: arbimine-pro
+    runtime: python
+    repo: https://github.com/emmmanuelkamuti629-alt/Arbimine.pro
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn App:app
+    envVars:
+      - key: MIN_PROFIT_PERCENT
+        value: 0.3
+      - key: SCAN_INTERVAL
+        value: 5
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    healthCheckPath: /api/health
+    autoDeploy: true
