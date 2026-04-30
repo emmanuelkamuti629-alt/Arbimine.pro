@@ -14,11 +14,11 @@ app = Flask(__name__)
 CORS(app)
 
 # =========================
-# CONFIGURATION - 300 COINS
+# CONFIGURATION
 # =========================
 MIN_PROFIT = float(os.getenv("MIN_PROFIT", "0.1"))
 MIN_LIQUIDITY = int(os.getenv("MIN_LIQUIDITY", "1000"))
-TOP_N_COINS = 300 # Safe for 512MB RAM
+TOP_N_COINS = 300
 
 EXCHANGES_TO_SCAN = {
     'mexc': 'mexc',
@@ -55,22 +55,32 @@ def get_top_300_coins():
         print("🔍 Fetching top 300 coins...")
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {'vs_currency': 'usd', 'order': 'volume_desc', 'per_page': 250, 'page': 1}
-        r1 = requests.get(url, params=params, timeout=20).json()
-        params['page'] = 2
-        r2 = requests.get(url, params=params, timeout=20).json()
+        r1 = requests.get(url, params=params, timeout=20)
         
-        coins = r1 + r2
-        top_300_symbols = [f"{c['symbol'].upper()}/USDT" for c in coins][:TOP_N_COINS]
-        print(f"✅ Loaded {len(top_300_symbols)} coins")
+        coins = []
+        if isinstance(r1.json(), list):
+            coins.extend(r1.json())
+        
+        params['page'] = 2
+        r2 = requests.get(url, params=params, timeout=20)
+        if isinstance(r2.json(), list):
+            coins.extend(r2.json())
+        
+        if coins:
+            top_300_symbols = [f"{c['symbol'].upper()}/USDT" for c in coins][:TOP_N_COINS]
+            print(f"✅ Loaded {len(top_300_symbols)} coins")
+        else:
+            raise Exception("CoinGecko returned no valid data")
+            
         return top_300_symbols
     except Exception as e:
         print(f"CoinGecko error: {e}. Using fallback")
-        fallback = ["BTC","ETH","SOL","BNB","XRP","DOGE","ADA","TRX","LINK","AVAX","TON","SHIB","DOT","LTC","BCH","NEAR","APT","MATIC","ARB","OP","SUI","PEPE","WIF","BONK","SEI","TIA","INJ","FET","RNDR","TAO","WLD","PYTH","JUP","DOGS","NOT","ORDI","1000SATS","FLOKI","LUNC","LUNA","ATOM","ICP","FTM","HBAR","CRO","VET","FIL","XLM","ALGO","EGLD","AXS","MANA","SAND","APE","CHZ","GRT","IMX","FLOW","XTZ","EOS","NEO","KAVA","CAKE","1INCH","CRV","AAVE","MKR","SNX","COMP","UNI","SUSHI","ZRX","BAT","ENJ","OMG","KNC","LRC","BAND","ANKR","STORJ","SKL","REN","BAL","YFI","BADGER","ALPHA","REEF","CTSI","OCEAN","ROSE","CELR","ONE","ZIL","ONT","QTUM","ICX","IOST","WAVES","DASH","XMR","ZEC","ZEN","RVN","DGB","SC","XEM","NANO","KSM","GLMR","MOVR","ASTR","ACA","PARA","XOR","VAL","PSWAP","KAR","BNC","AIR","PHALA","CRAB","LT","RING","KMA","TEER","BSX","CHAOS","MATH","MIR","LIT","PDEX","BPX","HKO","KMW","KUSD","KINT","EQ","EQD","ZERO","ZLK","MOM","RMRK","DED","PINK","USDT","USDC","DAI","TUSD","FDUSD","PYUSD","GMX","GALA","LDO","OP","ENS","BLUR","RPL","MASK","AGIX","DYDX","STX","KAS","CFX","RUNE","PENDLE","SSV","AR","NEAR","MINA","EGLD","IOTA","XDC","QNT","ALGO","THETA","XTZ","HBAR","ICP","FIL","APT","SAND","MANA","AXS","APE","CHZ","FLOW","GALA","LRC","OMG","BAT","ZRX","ENJ","SKL","STORJ","ANKR","CVC","RLC","BAND","KNC","REN","OXT","NMR","REP","MLN","GNO","LPT","CTSI","OCEAN","ROSE","CELR","COTI","OGN","NKN","DENT","DOCK","FUN","KEY","MDT","NULS","ONG","POWR","STMX","STRAX","SYS","TROY","VITE","WAN","WING","WTC","XVS","YFII","ZIL","ZRX","ZKS","ZEC","XMR","XLM","XRP","XDC","XEM","XCH","XNO","XAUT","XYO","YFI","YGG","ZIL","ZEN"]
+        fallback = ["BTC","ETH","SOL","BNB","XRP","DOGE","ADA","TRX","LINK","AVAX","TON","SHIB","DOT","LTC","BCH","NEAR","APT","MATIC","ARB","OP","SUI","PEPE","WIF","BONK","SEI","TIA","INJ","FET","RNDR","TAO","WLD","PYTH","JUP","DOGS","NOT","ORDI","1000SATS","FLOKI","LUNC","LUNA","ATOM","ICP","FTM","HBAR","CRO","VET","FIL","XLM","ALGO","EGLD","AXS","MANA","SAND","APE","CHZ","GRT","IMX","FLOW","XTZ","EOS","NEO","KAVA","CAKE","1INCH","CRV","AAVE","MKR","SNX","COMP","UNI","SUSHI","ZRX","BAT","ENJ","OMG","KNC","LRC","BAND","ANKR","STORJ","SKL","REN","BAL","YFI","BADGER","ALPHA","REEF","CTSI","OCEAN","ROSE","CELR","ONE","ZIL","ONT","QTUM","ICX","IOST","WAVES","DASH","XMR","ZEC","ZEN","RVN","DGB","SC","XEM","NANO","KSM","GLMR","MOVR","ASTR","ACA","PARA","XOR","VAL","PSWAP","KAR","BNC","AIR","PHALA","CRAB","LT","RING","KMA","TEER","BSX","CHAOS","MATH","MIR","LIT","PDEX","BPX","HKO","KMW","KUSD","KINT","EQ","EQD","ZERO","ZLK","MOM","RMRK","DED","PINK","GMX","GALA","LDO","ENS","BLUR","RPL","MASK","AGIX","DYDX","STX","KAS","CFX","RUNE","PENDLE","SSV","AR","MINA","IOTA","XDC","QNT","THETA","GALA","LDO","BLUR","RPL","ENS","SSV","PENDLE","ARKM","C98","ID","EDU","SUI","TIA","PYTH","JUP","JTO","DYM","STRK","PIXEL","PORTAL","ALT","MANTA","ONDO","AEVO","ETHFI","ENA","W","TNSR","SAGA","TAO","OMNI","REZ","BB","NOT","IO","ZK","ZRO","LISTA","G","BANANA","RENDER","NOT","DOGS","HMSTR","CATI","PNUT","ACT","GOAT","MOODENG","X","CHILLGUY","BAN","PUFFER","SWELL","GRASS","DRIFT","ME","MOVE","VANA","PENGU","USUAL","FARTCOIN","AIXBT","VIRTUAL","AI16Z","ARC","GRIFFAIN","ZEREBRO","ELIZA","COOKIE","AVA","MORPHO","DBR","SPX","MOG","NPC","BRETT","DEGEN","TOSHI","KEYCAT","HIGHER","DOGINME","TYBG","WOLF","GIGA","POPCAT","MICHI","FWOG","SCF","RETARDIO","SIGMA","HARAMBE","BITCOIN","PEPECOIN","WOJAK","MEME","TURBO","LADYS","PEPE2","PONKE","ANDY","LANDWOLF","MYRO","WEN","SLERF","BOME","WEN","JUP","JTO","PYTH","RAY","ORCA","MNGO","COPE","STEP","SAMO","KIN","FIDA","MAPS","MEDIA","ATLAS","POLIS","STAR","GST","GMT","APEX","PERP","HEGIC","RARI","MASK","RARE","SUPER","GHST","AXS","SLP","YGG","ALICE","TLM","SAND","MANA","ENJ","ILV","GODS","PYR","DAR","VGX","WIN","BTT","JST","SUN","NFT"]
         top_300_symbols = [f"{s}/USDT" for s in fallback[:TOP_N_COINS]]
         return top_300_symbols
 
 # =========================
-# PRICE ENGINE
+# PRICE ENGINE - FIXED STATUS UPDATE
 # =========================
 class PriceEngine:
     def __init__(self):
@@ -88,11 +98,10 @@ class PriceEngine:
                 exchange_status[name] = f"init_failed"
 
     async def get_available_symbols(self, exchange, coins):
-        """Load markets for ONE exchange, get symbols, then delete to save RAM"""
         try:
             await exchange.load_markets()
             available = [s for s in coins if s in exchange.markets and exchange.markets[s].get('active')]
-            exchange.markets = {} # Delete 15-20MB immediately
+            exchange.markets = {}
             gc.collect()
             return available
         except Exception as e:
@@ -171,7 +180,7 @@ class ArbitrageCalculator:
         gc.collect()
 
 # =========================
-# BACKGROUND TASKS
+# BACKGROUND TASKS - FIXED STATUS
 # =========================
 async def fetch_exchange_sequential(name, exchange, coins):
     try:
@@ -182,6 +191,9 @@ async def fetch_exchange_sequential(name, exchange, coins):
             exchange_status[name] = "no_pairs"
             return name, 0
             
+        # CRITICAL FIX: Update status to "ready" after discovery
+        exchange_status[name] = f"ready: {len(available)}"
+        
         batch_size = 40
         total_count = 0
         for i in range(0, len(available), batch_size):
@@ -227,7 +239,6 @@ def run_rest_poller():
             start = time.time()
             total_updates = 0
             
-            # Process exchanges ONE BY ONE to stay under 512MB
             for name, exchange in engine.exchanges.items():
                 print(f"Polling {name}...")
                 _, count = await fetch_exchange_sequential(name, exchange, coins)
@@ -238,7 +249,7 @@ def run_rest_poller():
             elapsed = time.time() - start
             print(f"Full poll cycle: {total_updates} prices in {elapsed:.1f}s")
             gc.collect()
-            await asyncio.sleep(max(60, 180 - elapsed)) # 3 min cycle for 300 coins
+            await asyncio.sleep(max(60, 180 - elapsed))
     
     loop.run_until_complete(poll_sequential())
 
@@ -277,6 +288,7 @@ def debug():
     with table_lock:
         tracked = len(price_table)
         symbols_with_2plus = sum(1 for s in price_table.values() if len(s) >= 2)
+    active_count = sum(1 for s in exchange_status.values() if 'live' in s or 'ready' in s)
     return jsonify({
         "scan_count": scan_count,
         "total_coins": len(top_300_symbols),
@@ -284,7 +296,7 @@ def debug():
         "symbols_on_2plus_exchanges": symbols_with_2plus,
         "exchange_status": exchange_status,
         "symbols_per_exchange": symbol_count_by_exchange,
-        "memory_status": "300 coins = ~280MB RAM usage"
+        "active_count": f"{active_count}/5"
     })
 
 HTML_TEMPLATE = """
@@ -311,7 +323,7 @@ HTML_TEMPLATE = """
 .live { display: inline-block; width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: pulse 1s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
         footer { text-align: center; margin-top: 15px; color: #666; font-size: 0.6em; }
-   .debug { background: #2a2f4f; padding: 8px; border-radius: 5px; margin: 10px 0; font-size: 0.6em; }
+.debug { background: #2a2f4f; padding: 8px; border-radius: 5px; margin: 10px 0; font-size: 0.6em; }
     </style>
 </head>
 <body>
