@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""
-Arbimine.pro - Ultra-Fast Cross-Exchange Arbitrage Scanner
-300+ Coins | Real-time WebSocket | <400ms scan cycles
-"""
-
 import os
 import asyncio
 import threading
-import json
 import time
 import random
 from datetime import datetime
@@ -23,53 +17,27 @@ CORS(app)
 # CONFIGURATION
 # =========================
 MIN_PROFIT = float(os.getenv("MIN_PROFIT", "0.3"))
-TOP_N_COINS = 100 # Limit for WS subs. Increase if your VPS can handle it
-EXCHANGES_TO_SCAN = ['binance', 'bybit', 'okx', 'kucoin', 'gate']
+EXCHANGES_TO_SCAN = ['binance', 'bybit', 'okx', 'kucoin', 'gate', 'mexc', 'bitget']
+MAX_PAIRS_PER_EXCHANGE = int(os.getenv("MAX_PAIRS", "300")) # Render limit
 
-# Global state - thread safe
+# Global state
 latest_opportunities = []
 last_scan_time = None
 scan_count = 0
-price_table = defaultdict(dict) # {symbol: {exchange: {bid, ask, bid_vol, ask_vol, ts}}}
+price_table = defaultdict(dict)
+all_symbols = set() # Dynamic list of all USDT pairs found
+symbol_count_by_exchange = {}
 table_lock = threading.Lock()
-
-# =========================
-# 300+ COINS
-# =========================
-ALL_COINS = [
-    "BTC", "ETH", "XRP", "BNB", "SOL", "DOGE", "ADA", "TRX", "LINK", "AVAX", "TON", "SHIB", "DOT", "LTC", "BCH",
-    "NEAR", "APT", "ICP", "MATIC", "POL", "ARB", "OP", "ATOM", "HBAR", "FIL", "XLM", "VET", "RNDR", "INJ", "KAS",
-    "ALGO", "ETC", "CRO", "XMR", "PEPE", "BONK", "JUP", "SUI", "SEI", "STRK", "TIA", "BLUR", "DYDX", "SUSHI",
-    "UNI", "AAVE", "GRT", "GALA", "ENJ", "SAND", "AXS", "FLOW", "FTM", "BEAM", "CRV", "CAKE", "COMP", "MKR",
-    "SNX", "ZEC", "DASH", "XTZ", "EOS", "NEO", "IOTA", "OMG", "ZIL", "KSM", "WAVES", "KAVA", "BAND", "NU",
-    "GHX", "MCTP", "WKC", "GAIA", "NATIX", "SUT", "CESS", "REEF", "COTI", "CHZ", "STMX", "CKB", "ONE", "ICX",
-    "STEEM", "SC", "LSK", "STRAT", "ARK", "KMD", "DGB", "RVN", "XVG", "FUN", "GAS", "WAN", "NULS", "ALICE",
-    "BETA", "C98", "DUSK", "ERN", "FIDA", "GTC", "HARD", "IDEX", "JASMY", "KLAY", "LIT", "MINA", "NKN", "OXT",
-    "POND", "QNT", "RLC", "STORJ", "TWT", "UMA", "VRA", "WOO", "XNO", "YGG", "ZRX", "AGLD", "1INCH", "ANKR",
-    "BAL", "BNT", "CELO", "CVC", "DENT", "ELF", "FET", "GNO", "HOT", "IOST", "JST", "KNC", "LOOM", "MANA",
-    "NMR", "OCEAN", "POLS", "QSP", "REN", "SXP", "TRB", "UOS", "VTHO", "WAXP", "BOBA", "CELR", "CHR", "CTK",
-    "DODO", "ELA", "FIO", "GLM", "HNT", "JOE", "KP3R", "LRC", "METIS", "NYM", "ORCA", "POKT", "RAD", "SKL",
-    "THETA", "UFO", "VEGA", "WIN", "XVS", "YFI", "ZEN", "AEVO", "ALT", "AXL", "BIGTIME", "CYBER", "DYM",
-    "ETHFI", "FRAME", "GAL", "HIFI", "ID", "JTO", "KAP", "LADYS", "MAV", "NAKA", "ORBS", "PENDLE", "RACA",
-    "SEILOR", "TNSR", "UQC", "VIC", "WIF", "XAI", "YES", "AIDOGE", "BABYDOGE", "COQ", "FLOKI", "MYRO", "PEPE2",
-    "SAMO", "TURBO", "WOJAK", "BONK2", "DOG", "ELON", "HUSKY", "KISHU", "AGIX", "TAO", "AKT", "AR", "CFX",
-    "DOVU", "ENQAI", "HKT", "IQ", "KRL", "LAMBDA", "MND", "API3", "BTRST", "CLV", "DEXE", "FORT", "GODS",
-    "HIGH", "ILV", "JUV", "KARATE", "LQTY", "MAGIC", "NEST", "OGN", "PRIME", "PSG", "RARE", "SUPER", "TLM",
-    "ULTRA", "VOXEL", "WEMIX", "XWG"
-]
-
-COINS = list(set(ALL_COINS))[:TOP_N_COINS]
-SYMBOLS = [f"{coin}/USDT" for coin in COINS]
 
 EXCHANGE_FEES = {
     'binance': 0.001, 'bybit': 0.001, 'okx': 0.001, 'kucoin': 0.001,
-    'gate': 0.002, 'mexc': 0.002, 'huobi': 0.002, 'bitget': 0.001,
+    'gate': 0.002, 'mexc': 0.002, 'bitget': 0.001, 'huobi': 0.002,
 }
 
-print(f"✅ Loaded {len(SYMBOLS)} trading pairs across {len(EXCHANGES_TO_SCAN)} exchanges")
+print("✅ Starting dynamic coin discovery...")
 
 # =========================
-# WEBSOCKET PRICE ENGINE
+# DYNAMIC PRICE ENGINE
 # =========================
 class PriceEngine:
     def __init__(self):
@@ -80,43 +48,37 @@ class PriceEngine:
                 self.exchanges[name] = exchange_class({
                     'enableRateLimit': True,
                     'options': {'defaultType': 'spot'},
+                    'timeout': 30000,
                 })
             except Exception as e:
                 print(f"Failed to init {name}: {e}")
 
-    async def watch_exchange(self, name, exchange):
-        """Keep websocket open forever for one exchange"""
-        while True:
+    async def discover_all_symbols(self):
+        """Load all USDT markets from all exchanges on startup"""
+        global all_symbols, symbol_count_by_exchange
+        print("🔍 Discovering all USDT pairs...")
+        
+        for name, exchange in self.exchanges.items():
             try:
-                # Use watch_tickers for bulk updates - fastest method
-                tickers = await exchange.watch_tickers(SYMBOLS)
-                now = time.time()
-
-                with table_lock:
-                    for symbol, ticker in tickers.items():
-                        if ticker.get('bid') and ticker.get('ask') and ticker['bid'] > 0:
-                            price_table[symbol][name] = {
-                                'bid': float(ticker['bid']),
-                                'ask': float(ticker['ask']),
-                                'bidVolume': float(ticker.get('bidVolume') or 0),
-                                'askVolume': float(ticker.get('askVolume') or 0),
-                                'ts': now
-                            }
+                await exchange.load_markets()
+                # Get all active spot USDT pairs
+                usdt_pairs = [
+                    s for s, m in exchange.markets.items() 
+                    if m.get('quote') == 'USDT' 
+                    and m.get('spot') 
+                    and m.get('active')
+                ]
+                # Limit to prevent overload
+                usdt_pairs = usdt_pairs[:MAX_PAIRS_PER_EXCHANGE]
+                symbol_count_by_exchange[name] = len(usdt_pairs)
+                all_symbols.update(usdt_pairs)
+                print(f"[{name}] Found {len(usdt_pairs)} USDT pairs")
             except Exception as e:
-                print(f"{name} WS error: {e}. Reconnecting in 5s...")
-                await asyncio.sleep(5)
-                try:
-                    await exchange.close()
-                except:
-                    pass
-                # Recreate exchange instance
-                exchange_class = getattr(ccxt_pro, name)
-                self.exchanges[name] = exchange_class({'enableRateLimit': True})
-                exchange = self.exchanges[name]
-
-    async def start_all_streams(self):
-        tasks = [self.watch_exchange(name, ex) for name, ex in self.exchanges.items()]
-        await asyncio.gather(*tasks)
+                print(f"[{name}] Market load error: {e}")
+                symbol_count_by_exchange[name] = 0
+        
+        all_symbols = list(all_symbols)
+        print(f"✅ Total unique USDT pairs across all exchanges: {len(all_symbols)}")
 
     def get_fee(self, exchange):
         return EXCHANGE_FEES.get(exchange, 0.002)
@@ -134,27 +96,25 @@ class ArbitrageCalculator:
         opps = []
 
         with table_lock:
-            # Copy to avoid holding lock during calcs
             snapshot = {s: dict(exs) for s, exs in price_table.items()}
 
+        # Only check symbols that exist on 2+ exchanges
         for symbol, ex_data in snapshot.items():
             if len(ex_data) < 2:
                 continue
 
-            # Find best buy = lowest ask + fee, best sell = highest bid - fee
             best_buy = None
             best_sell = None
             min_ask_eff = float('inf')
             max_bid_eff = 0
 
             for ex_name, data in ex_data.items():
-                # Skip stale data >3s old
-                if time.time() - data['ts'] > 3:
+                if time.time() - data['ts'] > 10: # 10s stale cutoff for REST
                     continue
 
                 fee = self.engine.get_fee(ex_name)
-                ask_eff = data['ask'] * (1 + fee) # What you actually pay
-                bid_eff = data['bid'] * (1 - fee) # What you actually get
+                ask_eff = data['ask'] * (1 + fee)
+                bid_eff = data['bid'] * (1 - fee)
 
                 if ask_eff < min_ask_eff:
                     min_ask_eff = ask_eff
@@ -167,7 +127,6 @@ class ArbitrageCalculator:
                 profit_pct = ((max_bid_eff - min_ask_eff) / min_ask_eff) * 100
 
                 if profit_pct >= MIN_PROFIT:
-                    # Real liquidity = min of what you can buy and what you can sell
                     buy_liquidity = best_buy[1]['askVolume'] * best_buy[1]['ask']
                     sell_liquidity = best_sell[1]['bidVolume'] * best_sell[1]['bid']
                     liquidity = min(buy_liquidity, sell_liquidity)
@@ -184,13 +143,88 @@ class ArbitrageCalculator:
                     })
 
         opps.sort(key=lambda x: x['profit_percent'], reverse=True)
-        latest_opportunities = opps[:50]
+        latest_opportunities = opps[:100] # Show top 100
         last_scan_time = datetime.utcnow()
         scan_count += 1
 
         elapsed_ms = (time.time() - start) * 1000
-        if scan_count % 10 == 0: # Log every 10th scan
-            print(f"Scan #{scan_count}: {len(opps)} opps found in {elapsed_ms:.0f}ms")
+        if scan_count % 5 == 0:
+            print(f"Scan #{scan_count}: {len(opps)} opps from {len(snapshot)} symbols in {elapsed_ms:.0f}ms")
+
+# =========================
+# BACKGROUND TASKS - REST POLLING FOR RENDER
+# =========================
+async def fetch_exchange_batch(name, exchange, symbols_batch):
+    """Fetch one batch of tickers from one exchange"""
+    try:
+        # fetch_tickers with specific symbols is much faster than all
+        tickers = await exchange.fetch_tickers(symbols_batch)
+        now = time.time()
+        count = 0
+        with table_lock:
+            for symbol, ticker in tickers.items():
+                if ticker.get('bid') and ticker.get('ask') and ticker['bid'] > 0:
+                    price_table[symbol][name] = {
+                        'bid': float(ticker['bid']),
+                        'ask': float(ticker['ask']),
+                        'bidVolume': float(ticker.get('baseVolume') or 0),
+                        'askVolume': float(ticker.get('baseVolume') or 0),
+                        'ts': now
+                    }
+                    count += 1
+        return name, count
+    except Exception as e:
+        print(f"[{name}] Batch error: {type(e).__name__}: {e}")
+        return name, 0
+
+def run_rest_poller():
+    """Poll all exchanges in batches to avoid rate limits"""
+    engine = PriceEngine()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    async def init_and_poll():
+        await engine.discover_all_symbols()
+        
+        while True:
+            start = time.time()
+            tasks = []
+            
+            # Batch symbols: 50 per request to stay under rate limits
+            batch_size = 50
+            for name, exchange in engine.exchanges.items():
+                # Only request symbols that exist on this exchange
+                ex_symbols = [s for s in all_symbols if s in exchange.markets][:MAX_PAIRS_PER_EXCHANGE]
+                for i in range(0, len(ex_symbols), batch_size):
+                    batch = ex_symbols[i:i+batch_size]
+                    tasks.append(fetch_exchange_batch(name, exchange, batch))
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            total_updates = sum(r[1] for r in results if isinstance(r, tuple))
+            
+            elapsed = time.time() - start
+            print(f"REST poll: {total_updates} prices updated in {elapsed:.1f}s")
+            
+            # Sleep to avoid rate limits. 400+ pairs = ~10s cycle
+            await asyncio.sleep(max(3, 15 - elapsed))
+    
+    loop.run_until_complete(init_and_poll())
+
+def run_calculator_loop():
+    engine = PriceEngine()
+    calc = ArbitrageCalculator(engine)
+    while True:
+        try:
+            calc.find_opportunities()
+            time.sleep(1) # Calc every 1s
+        except Exception as e:
+            print(f"Calculator error: {e}")
+            time.sleep(1)
+
+# Start background threads
+threading.Thread(target=run_rest_poller, daemon=True).start()
+time.sleep(10) # Let discovery + first poll complete
+threading.Thread(target=run_calculator_loop, daemon=True).start()
 
 # =========================
 # FLASK ROUTES
@@ -202,7 +236,8 @@ def home():
                                   scan_count=scan_count,
                                   last_scan=last_scan_time.strftime('%H:%M:%S UTC') if last_scan_time else 'Starting...',
                                   min_profit=MIN_PROFIT,
-                                  coins=len(SYMBOLS))
+                                  coins=len(all_symbols),
+                                  exchanges=symbol_count_by_exchange)
 
 @app.route('/api/opportunities')
 def api_opportunities():
@@ -211,17 +246,21 @@ def api_opportunities():
         "scan_count": scan_count,
         "last_scan": last_scan_time.isoformat() if last_scan_time else None,
         "opportunities": latest_opportunities,
-        "total": len(latest_opportunities)
+        "total_symbols": len(all_symbols),
+        "symbols_per_exchange": symbol_count_by_exchange
     })
 
 @app.route('/api/health')
 def health():
+    with table_lock:
+        tracked = len(price_table)
     return jsonify({
         "status": "healthy",
         "scans": scan_count,
-        "coins": len(SYMBOLS),
+        "total_unique_coins": len(all_symbols),
+        "symbols_tracked": tracked,
         "exchanges": len(EXCHANGES_TO_SCAN),
-        "symbols_tracked": len(price_table)
+        "symbols_per_exchange": symbol_count_by_exchange
     })
 
 # =========================
@@ -233,21 +272,22 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Arbimine.pro - Live Arbitrage Scanner</title>
+    <title>Arbimine.pro - Full Market Scanner</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Courier New', monospace; background: #0a0e27; padding: 20px; color: #ccc; }
-       .container { max-width: 1400px; margin: 0 auto; }
-       .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; margin-bottom: 20px; color: white; }
-       .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
-       .stat-card { background: #1a1f3f; padding: 15px; border-radius: 8px; text-align: center; }
-       .stat-value { font-size: 2em; font-weight: bold; color: #667eea; }
-       .opportunities { background: #1a1f3f; border-radius: 10px; padding: 20px; }
-       .arb-row { display: grid; grid-template-columns: 60px 120px 100px 120px 100px; gap: 10px; padding: 8px 0; border-bottom: 1px solid #2a2f4f; align-items: center; }
-       .arb-header { font-weight: bold; color: #667eea; border-bottom: 2px solid #667eea; margin-bottom: 10px; }
-       .buy { color: #10b981; }.sell { color: #f59e0b; }.profit { color: #10b981; font-weight: bold; }
-       .exchange { background: #2a2f4f; padding: 2px 8px; border-radius: 4px; font-size: 0.9em; }
-       .live { display: inline-block; width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: pulse 1s infinite; }
+      .container { max-width: 1600px; margin: 0 auto; }
+      .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; margin-bottom: 20px; color: white; }
+      .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 20px; }
+      .stat-card { background: #1a1f3f; padding: 15px; border-radius: 8px; text-align: center; }
+      .stat-value { font-size: 1.8em; font-weight: bold; color: #667eea; }
+      .stat-label { font-size: 0.9em; opacity: 0.8; }
+      .opportunities { background: #1a1f3f; border-radius: 10px; padding: 20px; }
+      .arb-row { display: grid; grid-template-columns: 60px 100px 100px 80px 100px 80px; gap: 10px; padding: 8px 0; border-bottom: 1px solid #2a2f4f; align-items: center; font-size: 0.9em; }
+      .arb-header { font-weight: bold; color: #667eea; border-bottom: 2px solid #667eea; margin-bottom: 10px; }
+      .buy { color: #10b981; }.sell { color: #f59e0b; }.profit { color: #10b981; font-weight: bold; }
+      .exchange { background: #2a2f4f; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; }
+      .live { display: inline-block; width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: pulse 1s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
         footer { text-align: center; margin-top: 20px; color: #666; font-size: 0.9em; }
     </style>
@@ -256,14 +296,16 @@ HTML_TEMPLATE = """
     <div class="container">
         <div class="header">
             <h1>🚀 Arbimine.pro <span class="live"></span></h1>
-            <p>Real-time WebSocket Scanner | {{ coins }} Coins | Updated continuously</p>
+            <p>Full Market Scanner | All USDT Pairs | Real-time</p>
         </div>
 
         <div class="stats">
-            <div class="stat-card"><div class="stat-value">{{ opportunities|length }}</div><div>Live Opportunities</div></div>
-            <div class="stat-card"><div class="stat-value">{{ scan_count }}</div><div>Calculations</div></div>
-            <div class="stat-card"><div class="stat-value">{{ last_scan }}</div><div>Last Update</div></div>
-            <div class="stat-card"><div class="stat-value">{{ min_profit }}%</div><div>Min Profit</div></div>
+            <div class="stat-card"><div class="stat-value">{{ opportunities|length }}</div><div class="stat-label">Live Opps</div></div>
+            <div class="stat-card"><div class="stat-value">{{ coins }}</div><div class="stat-label">Total Coins</div></div>
+            <div class="stat-card"><div class="stat-value">{{ exchanges|length }}</div><div class="stat-label">Exchanges</div></div>
+            <div class="stat-card"><div class="stat-value">{{ scan_count }}</div><div class="stat-label">Scans</div></div>
+            <div class="stat-card"><div class="stat-value">{{ last_scan }}</div><div class="stat-label">Last Update</div></div>
+            <div class="stat-card"><div class="stat-value">{{ min_profit }}%</div><div class="stat-label">Min Profit</div></div>
         </div>
 
         <div class="opportunities">
@@ -274,56 +316,29 @@ HTML_TEMPLATE = """
             <div class="arb-row">
                 <div class="buy">BUY</div>
                 <div><span class="exchange">{{ opp.buy_exchange }}</span></div>
-                <div>{{ opp.symbol }}/USDT</div>
+                <div>{{ opp.symbol }}</div>
                 <div class="profit">{{ opp.profit_percent }}%</div>
-                <div>${{ opp.liquidity }}</div>
+                <div>${{ "{:,}".format(opp.liquidity) }}</div>
                 <div>{{ opp.timestamp }}</div>
             </div>
             <div class="arb-row">
                 <div class="sell">SELL</div>
                 <div><span class="exchange">{{ opp.sell_exchange }}</span></div>
-                <div>{{ opp.symbol }}/USDT</div>
-                <div></div><div></div><div></div>
+                <div>{{ opp.symbol }}</div>
+                <div></div><div></div>
             </div>
             {% endfor %}
             {% if not opportunities %}
-            <p style="text-align: center; padding: 40px;">🔍 Connecting to exchanges... First data in ~10s</p>
+            <p style="text-align: center; padding: 40px;">🔍 Discovering markets... First scan in ~30s</p>
             {% endif %}
         </div>
 
-        <footer>⚠️ For educational purposes only. Verify wallets, fees, and withdrawal status before trading.</footer>
+        <footer>⚠️ Educational only. Exchanges: {% for ex, count in exchanges.items() %}{{ ex }}: {{ count }} pairs {% endfor %}</footer>
     </div>
-    <script>setInterval(() => location.reload(), 2000);</script>
+    <script>setInterval(() => location.reload(), 3000);</script>
 </body>
 </html>
 """
-
-# =========================
-# BACKGROUND TASKS
-# =========================
-def run_websocket_engine():
-    """Run websocket price streams forever"""
-    engine = PriceEngine()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(engine.start_all_streams())
-
-def run_calculator_loop():
-    """Calculate arbitrage every 300ms from websocket data"""
-    engine = PriceEngine()
-    calc = ArbitrageCalculator(engine)
-    while True:
-        try:
-            calc.find_opportunities()
-            time.sleep(0.3) # 300ms cycle = ~3 scans/sec
-        except Exception as e:
-            print(f"Calculator error: {e}")
-            time.sleep(1)
-
-# Start background threads
-threading.Thread(target=run_websocket_engine, daemon=True).start()
-time.sleep(2) # Let websockets connect first
-threading.Thread(target=run_calculator_loop, daemon=True).start()
 
 # =========================
 # MAIN
@@ -331,11 +346,11 @@ threading.Thread(target=run_calculator_loop, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     print("="*70)
-    print("🚀 Arbimine.pro - PRODUCTION VERSION")
+    print("🚀 Arbimine.pro - FULL MARKET VERSION")
     print("="*70)
-    print(f"📊 Monitoring {len(SYMBOLS)} pairs on {len(EXCHANGES_TO_SCAN)} exchanges")
-    print(f"⚡ WebSocket mode: ~300ms scan cycles")
-    print(f"🎯 Min profit: {MIN_PROFIT}% | Real liquidity from orderbook")
+    print(f"📊 Auto-discovering all USDT pairs on {len(EXCHANGES_TO_SCAN)} exchanges")
+    print(f"⚡ REST polling mode for Render compatibility")
+    print(f"🎯 Min profit: {MIN_PROFIT}% | Max pairs/exchange: {MAX_PAIRS_PER_EXCHANGE}")
     print(f"🌐 Dashboard: http://localhost:{port}")
     print("="*70)
     app.run(host="0.0.0.0", port=port, threaded=True, debug=False, use_reloader=False)
