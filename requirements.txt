@@ -1,6 +1,4 @@
 Flask==3.0.3
 Flask-Cors==4.0.1
 ccxt==4.4.93
-websockets==12.0
-aiohttp==3.9.5
 gunicorn==21.2.0
