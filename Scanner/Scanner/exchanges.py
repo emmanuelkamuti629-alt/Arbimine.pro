@@ -1,5 +1,6 @@
 """
 Exchange handlers for all 21 exchanges
+Fetches real-time prices for all USDT pairs
 """
 
 import aiohttp
@@ -9,11 +10,34 @@ from typing import Dict, List, Optional
 class ExchangeManager:
     """Manages all exchange connections and data fetching"""
     
-    def __init__(self, symbols: List[str], exchange_fees: Dict):
+    def __init__(self, symbols: List[str]):
         self.symbols = symbols
-        self.exchange_fees = exchange_fees
         
-        # Exchange configurations
+        # Exchange fees (maker/taker rates)
+        self.exchange_fees = {
+            'binance': 0.001,
+            'bybit': 0.001,
+            'okx': 0.001,
+            'kucoin': 0.001,
+            'gate': 0.002,
+            'mexc': 0.002,
+            'htx': 0.002,
+            'bitget': 0.001,
+            'bitmart': 0.0025,
+            'coinex': 0.002,
+            'lbank': 0.002,
+            'whitebit': 0.001,
+            'poloniex': 0.0025,
+            'bitfinex': 0.002,
+            'bitstamp': 0.005,
+            'upbit': 0.0025,
+            'indodax': 0.003,
+            'bingx': 0.001,
+            'xt': 0.002,
+            'ascendex': 0.001
+        }
+        
+        # Exchange API configurations
         self.exchanges = {
             'binance': {
                 'url': 'https://api.binance.com/api/v3/ticker/price',
@@ -101,8 +125,24 @@ class ExchangeManager:
             }
         }
     
-    async def fetch_exchange_data(self, session: aiohttp.ClientSession, exchange: str, config: dict) -> Dict:
-        """Fetch data from a specific exchange"""
+    async def fetch_prices(self) -> Dict[str, Dict[str, float]]:
+        """Fetch prices from all exchanges concurrently"""
+        async with aiohttp.ClientSession() as session:
+            tasks = []
+            for exchange_name, config in self.exchanges.items():
+                tasks.append(self._fetch_exchange(session, exchange_name, config))
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            all_prices = {}
+            for result in results:
+                if isinstance(result, dict):
+                    all_prices.update(result)
+            return all_prices
+    
+    async def _fetch_exchange(self, session: aiohttp.ClientSession, 
+                              exchange: str, config: dict) -> Dict:
+        """Fetch data from specific exchange based on its type"""
         try:
             if config['type'] == 'standard':
                 return await self._fetch_standard(session, exchange, config)
@@ -110,90 +150,95 @@ class ExchangeManager:
                 return await self._fetch_quote_exchange(session, exchange, config)
             else:
                 return await self._fetch_special(session, exchange, config)
+        except Exception as e:
+            return {exchange: {}}
+    
+    async def _fetch_standard(self, session: aiohttp.ClientSession, 
+                               exchange: str, config: dict) -> Dict:
+        """Handle standard exchange API format"""
+        try:
+            async with session.get(config['url'], timeout=10) as resp:
+                data = await resp.json()
+                prices = {}
+                
+                if exchange == 'binance':
+                    for item in data:
+                        if item['symbol'] in self.symbols:
+                            prices[item['symbol']] = float(item['price'])
+                
+                elif exchange == 'bybit':
+                    if 'result' in data and 'list' in data['result']:
+                        for item in data['result']['list']:
+                            if item['symbol'] in self.symbols:
+                                prices[item['symbol']] = float(item['lastPrice'])
+                
+                elif exchange == 'okx':
+                    if 'data' in data:
+                        for item in data['data']:
+                            if item['instId'] in self.symbols:
+                                prices[item['instId']] = float(item['last'])
+                
+                elif exchange == 'kucoin':
+                    if 'data' in data:
+                        for symbol in self.symbols:
+                            if symbol in data['data']:
+                                prices[symbol] = float(data['data'][symbol])
+                
+                elif exchange == 'gate':
+                    for item in data:
+                        if item['currency_pair'] in self.symbols:
+                            prices[item['currency_pair']] = float(item['last'])
+                
+                elif exchange == 'mexc':
+                    for item in data:
+                        if item['symbol'] in self.symbols:
+                            prices[item['symbol']] = float(item['price'])
+                
+                elif exchange == 'htx':
+                    if 'data' in data:
+                        for item in data['data']:
+                            symbol = item['symbol'].upper()
+                            if symbol in self.symbols:
+                                prices[symbol] = float(item['close'])
+                
+                elif exchange == 'bitget':
+                    if 'data' in data:
+                        for item in data['data']:
+                            if item['symbol'] in self.symbols:
+                                prices[item['symbol']] = float(item['lastPr'])
+                
+                elif exchange == 'bitmart':
+                    if 'data' in data and 'tickers' in data['data']:
+                        for item in data['data']['tickers']:
+                            if item['symbol'] in self.symbols:
+                                prices[item['symbol']] = float(item['last_price'])
+                
+                elif exchange == 'coinex':
+                    if 'data' in data and 'ticker' in data['data']:
+                        for symbol, ticker in data['data']['ticker'].items():
+                            usdt_symbol = symbol.upper()
+                            if usdt_symbol in self.symbols:
+                                prices[usdt_symbol] = float(ticker['last'])
+                
+                elif exchange == 'poloniex':
+                    for item in data:
+                        symbol = item['symbol'].split('_')[0] + 'USDT'
+                        if symbol in self.symbols:
+                            prices[symbol] = float(item['price'])
+                
+                elif exchange == 'xt':
+                    if 'result' in data and 'tickers' in data['result']:
+                        for item in data['result']['tickers']:
+                            if item['symbol'] in self.symbols:
+                                prices[item['symbol']] = float(item['last'])
+                
+                return {exchange: prices}
         except Exception:
             return {exchange: {}}
     
-    async def _fetch_standard(self, session: aiohttp.ClientSession, exchange: str, config: dict) -> Dict:
-        """Standard exchange API format"""
-        async with session.get(config['url'], timeout=10) as resp:
-            data = await resp.json()
-            prices = {}
-            
-            if exchange == 'binance':
-                for item in data:
-                    if item['symbol'] in self.symbols:
-                        prices[item['symbol']] = float(item['price'])
-            
-            elif exchange == 'bybit':
-                if 'result' in data and 'list' in data['result']:
-                    for item in data['result']['list']:
-                        if item['symbol'] in self.symbols:
-                            prices[item['symbol']] = float(item['lastPrice'])
-            
-            elif exchange == 'okx':
-                if 'data' in data:
-                    for item in data['data']:
-                        if item['instId'] in self.symbols:
-                            prices[item['instId']] = float(item['last'])
-            
-            elif exchange == 'kucoin':
-                if 'data' in data:
-                    for symbol in self.symbols:
-                        if symbol in data['data']:
-                            prices[symbol] = float(data['data'][symbol])
-            
-            elif exchange == 'gate':
-                for item in data:
-                    if item['currency_pair'] in self.symbols:
-                        prices[item['currency_pair']] = float(item['last'])
-            
-            elif exchange == 'mexc':
-                for item in data:
-                    if item['symbol'] in self.symbols:
-                        prices[item['symbol']] = float(item['price'])
-            
-            elif exchange == 'htx':
-                if 'data' in data:
-                    for item in data['data']:
-                        symbol = item['symbol'].upper()
-                        if symbol in self.symbols:
-                            prices[symbol] = float(item['close'])
-            
-            elif exchange == 'bitget':
-                if 'data' in data:
-                    for item in data['data']:
-                        if item['symbol'] in self.symbols:
-                            prices[item['symbol']] = float(item['lastPr'])
-            
-            elif exchange == 'bitmart':
-                if 'data' in data and 'tickers' in data['data']:
-                    for item in data['data']['tickers']:
-                        if item['symbol'] in self.symbols:
-                            prices[item['symbol']] = float(item['last_price'])
-            
-            elif exchange == 'coinex':
-                if 'data' in data and 'ticker' in data['data']:
-                    for symbol, ticker in data['data']['ticker'].items():
-                        usdt_symbol = symbol.upper()
-                        if usdt_symbol in self.symbols:
-                            prices[usdt_symbol] = float(ticker['last'])
-            
-            elif exchange == 'poloniex':
-                for item in data:
-                    symbol = item['symbol'].split('_')[0] + 'USDT'
-                    if symbol in self.symbols:
-                        prices[symbol] = float(item['price'])
-            
-            elif exchange == 'xt':
-                if 'result' in data and 'tickers' in data['result']:
-                    for item in data['result']['tickers']:
-                        if item['symbol'] in self.symbols:
-                            prices[item['symbol']] = float(item['last'])
-            
-            return {exchange: prices}
-    
-    async def _fetch_quote_exchange(self, session: aiohttp.ClientSession, exchange: str, config: dict) -> Dict:
-        """Handle exchanges with different quote currencies"""
+    async def _fetch_quote_exchange(self, session: aiohttp.ClientSession,
+                                      exchange: str, config: dict) -> Dict:
+        """Handle exchanges with different quote currencies (USD, KRW, IDR)"""
         try:
             prices = {}
             
@@ -239,8 +284,9 @@ class ExchangeManager:
         except Exception:
             return {exchange: {}}
     
-    async def _fetch_special(self, session: aiohttp.ClientSession, exchange: str, config: dict) -> Dict:
-        """Special handlers for unique APIs"""
+    async def _fetch_special(self, session: aiohttp.ClientSession,
+                               exchange: str, config: dict) -> Dict:
+        """Handle special exchange API formats"""
         try:
             prices = {}
             
@@ -280,3 +326,7 @@ class ExchangeManager:
             return {exchange: prices}
         except Exception:
             return {exchange: {}}
+    
+    def get_fee(self, exchange: str) -> float:
+        """Get trading fee for an exchange"""
+        return self.exchange_fees.get(exchange, 0.002)
