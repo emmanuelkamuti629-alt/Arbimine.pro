@@ -7,11 +7,16 @@ import requests
 import gc
 from datetime import datetime
 from flask import Flask, jsonify, render_template_string
-from flask_cors import CORS
-import ccxt.pro as ccxt_pro
 
 app = Flask(__name__)
-CORS(app)
+
+# Add CORS headers manually instead of using flask_cors
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
 
 # =========================
 # CONFIGURATION
@@ -37,7 +42,6 @@ top_300_symbols = []
 symbol_count_by_exchange = {}
 exchange_status = {}
 table_lock = threading.Lock()
-shared_engine = None  # Shared engine instance
 
 EXCHANGE_FEES = {
     'mexc': 0.002, 'kucoin': 0.001, 'coinex': 0.002,
@@ -88,7 +92,9 @@ class PriceEngine:
         self.exchanges = {}
         for name, ccxt_id in EXCHANGES_TO_SCAN.items():
             try:
-                exchange_class = getattr(ccxt_pro, ccxt_id)
+                # Use regular ccxt instead of ccxt.pro for better compatibility
+                import ccxt
+                exchange_class = getattr(ccxt, ccxt_id)
                 self.exchanges[name] = exchange_class({
                     'enableRateLimit': True,
                     'options': {'defaultType': 'spot'},
@@ -98,15 +104,6 @@ class PriceEngine:
             except Exception as e:
                 exchange_status[name] = f"init_failed: {str(e)[:20]}"
 
-    async def get_available_symbols(self, exchange, coins):
-        try:
-            await exchange.load_markets()
-            available = [s for s in coins if s in exchange.markets and exchange.markets[s].get('active', True)]
-            return available
-        except Exception as e:
-            print(f"Market load error: {type(e).__name__}")
-            return []
-
     def get_fee(self, exchange):
         return EXCHANGE_FEES.get(exchange, 0.002)
 
@@ -115,7 +112,7 @@ class PriceEngine:
 # =========================
 class ArbitrageCalculator:
     def __init__(self):
-        pass  # Will use shared price_table
+        pass
 
     def find_opportunities(self):
         global latest_opportunities, last_scan_time, scan_count
@@ -177,10 +174,9 @@ class ArbitrageCalculator:
 # =========================
 # BACKGROUND TASKS
 # =========================
-async def fetch_exchange_sequential(name, exchange, coins):
+def fetch_exchange_sequential(name, exchange, coins):
     try:
-        # Initialize exchange and get available symbols
-        await exchange.load_markets()
+        exchange.load_markets()
         available = [s for s in coins if s in exchange.markets and exchange.markets[s].get('active', True)]
         symbol_count_by_exchange[name] = len(available)
         
@@ -188,15 +184,14 @@ async def fetch_exchange_sequential(name, exchange, coins):
             exchange_status[name] = "no_pairs"
             return name, 0
             
-        exchange_status[name] = f"ready"
+        exchange_status[name] = "ready"
         
-        # Fetch tickers in batches
         batch_size = 30
         total_count = 0
         for i in range(0, len(available), batch_size):
             batch = available[i:i+batch_size]
             try:
-                tickers = await exchange.fetch_tickers(batch)
+                tickers = exchange.fetch_tickers(batch)
                 now = time.time()
                 
                 with table_lock:
@@ -207,72 +202,74 @@ async def fetch_exchange_sequential(name, exchange, coins):
                             price_table[symbol][name] = {
                                 'bid': float(ticker['bid']),
                                 'ask': float(ticker['ask']),
-                                'bidVolume': float(ticker.get('bidVolume', 0)),
-                                'askVolume': float(ticker.get('askVolume', 0)),
+                                'bidVolume': float(ticker.get('quoteVolume', 0)),
+                                'askVolume': float(ticker.get('quoteVolume', 0)),
                                 'ts': now
                             }
                             total_count += 1
             except Exception as e:
                 print(f"[{name}] Batch error: {e}")
             
-            del tickers if 'tickers' in locals() else None
+            # Clean up
+            if 'tickers' in locals():
+                del tickers
+            
             gc.collect()
-            await asyncio.sleep(0.3)
+            time.sleep(0.3)
         
         exchange_status[name] = f"live: {total_count}"
         return name, total_count
     except Exception as e:
-        exchange_status[name] = f"error"
+        exchange_status[name] = "error"
         print(f"[{name}] Fatal error: {e}")
         return name, 0
 
 def run_rest_poller():
-    global shared_engine
-    shared_engine = PriceEngine()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    engine = PriceEngine()
+    coins = get_top_300_coins()
     
-    async def poll_sequential():
-        coins = get_top_300_coins()
+    while True:
+        cycle_start = time.time()
+        print(f"\n{'='*50}")
+        print(f"🔄 Starting poll cycle at {datetime.utcnow().strftime('%H:%M:%S')}")
+        print(f"{'='*50}")
         
-        while True:
-            cycle_start = time.time()
-            print(f"\n{'='*50}")
-            print(f"🔄 Starting poll cycle at {datetime.utcnow().strftime('%H:%M:%S')}")
-            print(f"{'='*50}")
-            
-            for name, exchange in shared_engine.exchanges.items():
-                poll_start = time.time()
-                print(f"📊 Polling {name}...")
-                _, count = await fetch_exchange_sequential(name, exchange, coins)
-                print(f"   ✅ {name}: {count} prices in {time.time()-poll_start:.1f}s")
-                gc.collect()
-                await asyncio.sleep(2)
-            
-            cycle_time = time.time() - cycle_start
-            with table_lock:
-                print(f"📈 Cycle complete: {len(price_table)} symbols tracked in {cycle_time:.1f}s")
-            print(f"💾 Memory: {gc.get_count()}")
-            
-            # Clean up old data
-            with table_lock:
-                now = time.time()
-                for symbol in list(price_table.keys()):
-                    for ex in list(price_table[symbol].keys()):
-                        if now - price_table[symbol][ex]['ts'] > 120:
-                            del price_table[symbol][ex]
-                    if len(price_table[symbol]) == 0:
-                        del price_table[symbol]
-            
-            await asyncio.sleep(max(60, 180 - cycle_time))
-    
-    loop.run_until_complete(poll_sequential())
+        for name, exchange in engine.exchanges.items():
+            poll_start = time.time()
+            print(f"📊 Polling {name}...")
+            _, count = fetch_exchange_sequential(name, exchange, coins)
+            print(f"   ✅ {name}: {count} prices in {time.time()-poll_start:.1f}s")
+            gc.collect()
+            time.sleep(2)
+        
+        cycle_time = time.time() - cycle_start
+        with table_lock:
+            print(f"📈 Cycle complete: {len(price_table)} symbols tracked in {cycle_time:.1f}s")
+        
+        # Clean up old data
+        with table_lock:
+            now = time.time()
+            symbols_to_delete = []
+            for symbol in list(price_table.keys()):
+                exchanges_to_delete = []
+                for ex in list(price_table[symbol].keys()):
+                    if now - price_table[symbol][ex]['ts'] > 120:
+                        exchanges_to_delete.append(ex)
+                for ex in exchanges_to_delete:
+                    del price_table[symbol][ex]
+                if len(price_table[symbol]) == 0:
+                    symbols_to_delete.append(symbol)
+            for symbol in symbols_to_delete:
+                if symbol in price_table:
+                    del price_table[symbol]
+        
+        time.sleep(max(60, 180 - cycle_time))
 
 def run_calculator_loop():
     calc = ArbitrageCalculator()
     while True:
         try:
-            if len(price_table) > 0:  # Only scan if we have data
+            if len(price_table) > 0:
                 calc.find_opportunities()
             time.sleep(10)
         except Exception as e:
@@ -282,7 +279,7 @@ def run_calculator_loop():
 # Start threads
 print("Starting poller thread...")
 threading.Thread(target=run_rest_poller, daemon=True).start()
-time.sleep(30)  # Wait for initial data
+time.sleep(30)
 print("Starting calculator thread...")
 threading.Thread(target=run_calculator_loop, daemon=True).start()
 
@@ -296,7 +293,7 @@ def home():
                                   scan_count=scan_count,
                                   last_scan=last_scan_time.strftime('%H:%M:%S UTC') if last_scan_time else 'Starting...',
                                   min_profit=MIN_PROFIT,
-                                  coins=len(top_300_symbols),
+                                  coins=len(top_300_symbols) if top_300_symbols else 300,
                                   exchanges=symbol_count_by_exchange,
                                   status=exchange_status)
 
@@ -308,7 +305,7 @@ def debug():
     active_count = sum(1 for s in exchange_status.values() if 'live' in s)
     return jsonify({
         "scan_count": scan_count,
-        "total_coins": len(top_300_symbols),
+        "total_coins": len(top_300_symbols) if top_300_symbols else 300,
         "symbols_tracked": tracked,
         "symbols_on_2plus_exchanges": symbols_with_2plus,
         "exchange_status": exchange_status,
